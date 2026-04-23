@@ -41,9 +41,10 @@ suite('unescapeCsharpString', () => {
   });
 
   test('falls back to manual unescaper for C# `\\xNN` (rejected by JSON.parse)', () => {
-    // JSON does not accept \xNN; the manual fallback must.
-    const literal = '"a\\x41b"';
-    assert.equal(unescapeCsharpString(literal), 'aAb');
+    // JSON does not accept \xNN; the manual fallback must. Use a non-hex
+    // terminator (`Z`) because C#'s `\x` escape is greedy over 1-4 hex digits.
+    const literal = '"a\\x41Z"';
+    assert.equal(unescapeCsharpString(literal), 'aAZ');
   });
 
   test('passes non-string input through unchanged', () => {

@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert';
+import type { DebugProtocol } from '@vscode/debugprotocol';
 import {
   buildNewtonsoftExpression,
   buildSystemTextJsonExpression,
@@ -6,10 +7,19 @@ import {
   type IVariablesContext,
 } from '../util/expression.js';
 
-function ctx(partial: Partial<IVariablesContext['variable']> & { name: string }, container?: IVariablesContext['container']): IVariablesContext {
+const DEFAULT_CONTAINER: DebugProtocol.Variable = {
+  name: 'Locals',
+  value: '',
+  variablesReference: 0,
+};
+
+function ctx(
+  partial: Partial<IVariablesContext['variable']> & { name: string },
+  container?: IVariablesContext['container'],
+): IVariablesContext {
   return {
     sessionId: 'session-1',
-    container: container ?? { variablesReference: 0, name: 'Locals' },
+    container: container ?? DEFAULT_CONTAINER,
     variable: { variablesReference: 0, value: '...', ...partial },
   };
 }
