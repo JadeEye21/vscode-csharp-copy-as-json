@@ -1,0 +1,110 @@
+{
+  "name": "vscode-csharp-copy-as-json",
+  "displayName": "Copy as JSON (C# Debug)",
+  "description": "Right-click a variable in the VS Code Variables view during a C#/.NET debug session and copy it to the clipboard as pretty-printed JSON.",
+  "version": "0.0.1",
+  "publisher": "JadeEye21",
+  "license": "MIT",
+  "author": {
+    "name": "Harshal Dhagale",
+    "email": "harshal.dhagale@gmail.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/JadeEye21/vscode-csharp-copy-as-json.git"
+  },
+  "bugs": {
+    "url": "https://github.com/JadeEye21/vscode-csharp-copy-as-json/issues"
+  },
+  "homepage": "https://github.com/JadeEye21/vscode-csharp-copy-as-json#readme",
+  "qna": "https://github.com/JadeEye21/vscode-csharp-copy-as-json/issues",
+  "engines": {
+    "vscode": "^1.89.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Debuggers",
+    "Other"
+  ],
+  "keywords": [
+    "csharp",
+    "dotnet",
+    "debug",
+    "json",
+    "clipboard",
+    "variables",
+    "coreclr"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "csharpDebugCopyAsJson.copyAsJson",
+        "title": "Copy as JSON",
+        "category": "Debug"
+      }
+    ],
+    "menus": {
+      "debug/variables/context": [
+        {
+          "command": "csharpDebugCopyAsJson.copyAsJson",
+          "when": "inDebugMode && debugState == 'stopped' && (debugType == 'coreclr' || debugType == 'clr')",
+          "group": "5_cutcopypaste@10"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Copy as JSON (C# Debug)",
+      "properties": {
+        "csharpDebugCopyAsJson.allowedDebugTypes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [
+            "coreclr",
+            "clr"
+          ],
+          "markdownDescription": "List of `debugType` values for which the **Copy as JSON** command will run when invoked. The static menu `when` clause currently matches `coreclr` and `clr` only; this setting acts as a runtime guard for additional types you trigger via the command palette or keybinding (e.g. `mono`, `unity`)."
+        },
+        "csharpDebugCopyAsJson.evaluateTimeoutMs": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 500,
+          "maximum": 120000,
+          "markdownDescription": "Maximum time in milliseconds to wait for the debug adapter to evaluate the serialization expression before aborting. Long property getters or large object graphs can hang the debug UI; the timeout protects against that."
+        },
+        "csharpDebugCopyAsJson.preferNewtonsoft": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "If `true`, attempt `Newtonsoft.Json.JsonConvert.SerializeObject` first and fall back to `System.Text.Json.JsonSerializer.Serialize`. Useful when the debugged process references Newtonsoft.Json and you rely on its conventions (e.g. `ReferenceLoopHandling`)."
+        },
+        "csharpDebugCopyAsJson.trace": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "When `true`, write timestamped diagnostic logs (expression sent, DAP response shape, fallback decisions) to the **Copy as JSON** output channel. Off by default to avoid persisting potentially sensitive variable values to logs."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "lint": "eslint src --ext ts",
+    "test": "npm run compile && mocha --ui tdd \"out/test/**/*.test.js\"",
+    "package": "vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.11.0",
+    "@types/vscode": "^1.89.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "@vscode/debugprotocol": "^1.66.0",
+    "@vscode/vsce": "^2.24.0",
+    "eslint": "^8.57.0",
+    "mocha": "^10.3.0",
+    "typescript": "^5.4.0"
+  }
+}
