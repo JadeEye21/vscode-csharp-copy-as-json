@@ -46,7 +46,7 @@ jobs:
             --out vscode-csharp-copy-as-json-${{ steps.ver.outputs.version }}.vsix
 
       - name: Create GitHub Release with VSIX attached
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           name: ${{ github.ref_name }}
           generate_release_notes: true
