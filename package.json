@@ -20,7 +20,7 @@
   "qna": "https://github.com/JadeEye21/vscode-csharp-copy-as-json/issues",
   "engines": {
     "vscode": "^1.89.0",
-    "node": ">=20"
+    "node": "^20.19.0 || ^22.13.0 || >=24"
   },
   "categories": [
     "Debuggers",
@@ -91,20 +91,26 @@
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
-    "lint": "eslint src --ext ts",
+    "lint": "eslint \"src/**/*.ts\"",
     "test": "npm run compile && mocha --ui tdd \"out/test/**/*.test.js\"",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/mocha": "^10.0.6",
-    "@types/node": "^20.11.0",
+    "@types/node": "^25.6.0",
     "@types/vscode": "^1.89.0",
-    "@typescript-eslint/eslint-plugin": "^7.0.0",
-    "@typescript-eslint/parser": "^7.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.0",
+    "@typescript-eslint/parser": "^8.59.0",
     "@vscode/debugprotocol": "^1.66.0",
-    "@vscode/vsce": "^2.24.0",
-    "eslint": "^8.57.0",
-    "mocha": "^10.3.0",
-    "typescript": "^5.4.0"
+    "@vscode/vsce": "^3.9.1",
+    "eslint": "^10.2.1",
+    "mocha": "^11.7.5",
+    "typescript": "^6.0.3"
+  },
+  "overrides": {
+    "serialize-javascript": "^7.0.5",
+    "diff": "^8.0.3",
+    "uuid": "^14.0.0"
   }
 }
