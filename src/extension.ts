@@ -6,6 +6,8 @@ import {
   type IVariablesContext,
 } from './util/expression.js';
 import { unescapeCsharpString } from './util/unescape.js';
+import { validateEvaluateResult } from './util/validate.js';
+import { withTimeout } from './util/withTimeout.js';
 
 const COMMAND_ID = 'csharpDebugCopyAsJson.copyAsJson';
 const CONFIG_SECTION = 'csharpDebugCopyAsJson';
@@ -120,9 +122,10 @@ async function runCopyAsJsonInner(
   let lastError: string | undefined;
   for (const attempt of ordered) {
     for (const evalContext of contexts) {
+      const contextLabel = `${attempt.label} (${evalContext})`;
       trace(
         traceEnabled,
-        `evaluate (${attempt.label}, context=${evalContext}): ${attempt.expression}`,
+        `evaluate (${contextLabel}): ${attempt.expression}`,
       );
       try {
         const resp = await withTimeout(
@@ -132,21 +135,30 @@ async function runCopyAsJsonInner(
             context: evalContext,
           }) as Thenable<DapEvaluateResponse>,
           timeoutMs,
-          `${attempt.label} evaluate (${evalContext})`,
+          `${contextLabel} evaluate`,
         );
-        const raw = resp?.result;
-        if (typeof raw === 'string' && raw.length > 0 && !looksLikeError(raw)) {
-          const value = unescapeCsharpString(raw);
-          await vscode.env.clipboard.writeText(value);
-          trace(traceEnabled, `success: copied ${value.length} chars to clipboard`);
+        const validation = validateEvaluateResult(
+          resp?.result,
+          unescapeCsharpString,
+          contextLabel,
+        );
+        if (validation.ok) {
+          await vscode.env.clipboard.writeText(validation.json);
+          trace(
+            traceEnabled,
+            `success: copied ${validation.json.length} chars to clipboard via ${contextLabel}`,
+          );
           void vscode.window.setStatusBarMessage(
-            `$(clippy) Copied ${value.length} chars as JSON via ${attempt.label}`,
+            `$(clippy) Copied ${validation.json.length} chars as JSON via ${attempt.label}`,
             4000,
           );
           return;
         }
-        lastError = `${attempt.label} (${evalContext}) returned no usable result`;
-        trace(traceEnabled, `empty/invalid result: ${JSON.stringify(resp)}`);
+        lastError = validation.reason;
+        trace(
+          traceEnabled,
+          `validation failed: ${validation.reason}; raw=${JSON.stringify(resp)}`,
+        );
       } catch (err) {
         lastError = errorMessage(err);
         trace(traceEnabled, `error: ${lastError}`);
@@ -164,40 +176,9 @@ function pickEvaluateContexts(session: vscode.DebugSession): EvaluateContext[] {
   return supports ? ['clipboard', 'hover', 'repl'] : ['hover', 'repl'];
 }
 
-function withTimeout<T>(p: Thenable<T>, ms: number, label: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
-    Promise.resolve(p).then(
-      (v) => {
-        clearTimeout(timer);
-        resolve(v);
-      },
-      (e: unknown) => {
-        clearTimeout(timer);
-        reject(e instanceof Error ? e : new Error(errorMessage(e)));
-      },
-    );
-  });
-}
-
 function clampTimeout(value: number | undefined): number {
   const n = typeof value === 'number' && Number.isFinite(value) ? value : 8000;
   return Math.min(120_000, Math.max(500, n));
-}
-
-/**
- * Heuristic to detect debugger error sentinels returned in `result` rather
- * than as a DAP-level error response. The .NET adapter typically prefixes
- * such results with `error CSxxxx:` or `Cannot evaluate ...`.
- */
-function looksLikeError(raw: string): boolean {
-  if (raw.startsWith('error ')) {
-    return true;
-  }
-  if (/^Cannot (evaluate|find)/i.test(raw)) {
-    return true;
-  }
-  return false;
 }
 
 function errorMessage(err: unknown): string {

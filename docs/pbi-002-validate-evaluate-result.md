@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Derived from code review of `v0.0.1` (criticals C1, R1, R5).
+**In progress.** Branch `feature/pbi-002-validate-evaluate-result` extracts validation into pure modules, wires them into `extension.ts`, and adds unit tests covering C1 (truncation rejection) and R5 (looksLikeError regressions). R1 (repl-context echo stripping) is **explicitly deferred** - see "Deviations from plan" below.
 
 ## Goal
 
@@ -45,6 +45,11 @@ Out:
 | 2 | A large object whose serialized form exceeds the hover-context budget | Either Newtonsoft path succeeds or truncation toast appears; clipboard is never set to the truncated string. |
 | 3 | `{"Name":"NullReferenceException sample"}` synthesized via the immediate window | JSON written to clipboard; not flagged as an error. |
 | 4 | Forced `JSON.parse` failure (mock) | Trace channel logs full payload; user-facing toast is one line. |
+
+## Deviations from plan
+
+- **Repl-echo stripping (R1) is deferred.** The original PBI claimed "some adapters" prefix `repl`-context responses with the expression itself. We have not confirmed this against any specific .NET adapter (`netcoredbg`, `vsdbg`, `coreclr`, `clr`). Implementing speculative stripping now would risk corrupting valid responses. Instead, the validator currently treats any non-JSON response as a context failure, so an echoed response - if one ever appears - falls through to the next attempt cleanly. A regression test (`'rejects what looks like a repl-context echo'`) locks this in. If we observe an echo in the wild, follow-up work will add a targeted strip step.
+- **Phase-2 utility coverage from PBI-005 is closed by this PR.** `withTimeout` and `looksLikeError` now have unit tests. The PBI-005 status table will be updated accordingly.
 
 ## Telemetry
 

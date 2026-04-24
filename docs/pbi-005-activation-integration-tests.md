@@ -6,9 +6,9 @@
 
 | Phase | Items | Status |
 |---|---|---|
-| 1 (harness) | `@vscode/test-electron` runner, Mocha glob, activation smoke, CI wiring | This PR |
-| 2 (utility coverage) | `withTimeout` and `looksLikeError` tests | Deferred; lands with **PBI-002** |
-| 2 (fake DAP) | In-process fake adapter exercising success and all-contexts-failed paths | Deferred; lands with **PBI-002** / **PBI-003** since each needs a different fake |
+| 1 (harness) | `@vscode/test-electron` runner, Mocha glob, activation smoke, CI wiring | Done in PR #13 |
+| 2 (utility coverage) | `withTimeout` and `looksLikeError` tests | Done in **PBI-002** PR |
+| 2 (fake DAP) | In-process fake adapter exercising success and all-contexts-failed paths | Still deferred; will land with **PBI-003** (capability-detection tests need a tracker fake anyway) |
 
 Rationale: the harness has its own plumbing risk (test-electron download pinning, headless `xvfb` on Linux, Electron version drift). Landing it on its own keeps any harness-level CI failure attributable instead of blamed on test logic. The fake-DAP work splits naturally with the PBIs that consume it - PBI-002's tests need truncation injection, PBI-003's tests need a tracker that omits `supportsClipboardContext`. Purpose-built fakes beat speculative generalization.
 
