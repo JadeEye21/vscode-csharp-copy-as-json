@@ -92,7 +92,10 @@
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "lint": "eslint \"src/**/*.ts\"",
-    "test": "npm run compile && mocha --ui tdd \"out/test/**/*.test.js\"",
+    "pretest": "npm run compile",
+    "test:unit": "mocha --ui tdd \"out/test/*.test.js\"",
+    "test:integration": "node out/test/integration/runIntegration.js",
+    "test": "npm run test:unit && npm run test:integration",
     "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
@@ -103,6 +106,7 @@
     "@typescript-eslint/eslint-plugin": "^8.59.0",
     "@typescript-eslint/parser": "^8.59.0",
     "@vscode/debugprotocol": "^1.66.0",
+    "@vscode/test-electron": "^2.5.2",
     "@vscode/vsce": "^3.9.1",
     "eslint": "^10.2.1",
     "mocha": "^11.7.5",
