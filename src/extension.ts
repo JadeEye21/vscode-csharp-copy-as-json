@@ -8,6 +8,11 @@ import {
 import { unescapeCsharpString } from './util/unescape.js';
 import { validateEvaluateResult } from './util/validate.js';
 import { withTimeout } from './util/withTimeout.js';
+import {
+  clearSession,
+  createCapabilityTracker,
+  getSupportsClipboardContext,
+} from './util/clipboardCapability.js';
 
 const COMMAND_ID = 'csharpDebugCopyAsJson.copyAsJson';
 const CONFIG_SECTION = 'csharpDebugCopyAsJson';
@@ -31,6 +36,24 @@ export function activate(context: vscode.ExtensionContext): void {
     vscode.commands.registerCommand(COMMAND_ID, (arg: IVariablesContext) =>
       runCopyAsJson(arg, context),
     ),
+  );
+  // Watch every debug session's InitializeResponse so we know, authoritatively,
+  // whether the adapter supports DAP `evaluate` with `context: 'clipboard'`.
+  // Registered for `'*'` rather than `coreclr`/`clr` because the user can
+  // override `csharpDebugCopyAsJson.allowedDebugTypes`; the cost of a no-op
+  // tracker on unrelated sessions (one closure, one event subscription) is
+  // negligible compared to silently demoting the user to `hover`.
+  context.subscriptions.push(
+    vscode.debug.registerDebugAdapterTrackerFactory('*', {
+      createDebugAdapterTracker(session) {
+        return createCapabilityTracker(session.id);
+      },
+    }),
+  );
+  context.subscriptions.push(
+    vscode.debug.onDidTerminateDebugSession((session) => {
+      clearSession(session.id);
+    }),
   );
 }
 
@@ -170,9 +193,13 @@ async function runCopyAsJsonInner(
 }
 
 function pickEvaluateContexts(session: vscode.DebugSession): EvaluateContext[] {
-  const supports = (
-    session as unknown as { capabilities?: { supportsClipboardContext?: boolean } }
-  ).capabilities?.supportsClipboardContext === true;
+  // The cache is populated by the DebugAdapterTracker we register in
+  // `activate`. A cache miss means we never observed an InitializeResponse for
+  // this session - either the tracker was registered too late (impossible
+  // given `onDebug` activation) or the adapter never sent capabilities. The
+  // safe default is `false`: skip `clipboard` and use `hover -> repl`, which
+  // is what every adapter is required to support.
+  const supports = getSupportsClipboardContext(session.id) === true;
   return supports ? ['clipboard', 'hover', 'repl'] : ['hover', 'repl'];
 }
 
