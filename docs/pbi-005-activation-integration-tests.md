@@ -8,7 +8,7 @@
 |---|---|---|
 | 1 (harness) | `@vscode/test-electron` runner, Mocha glob, activation smoke, CI wiring | Done in PR #13 |
 | 2 (utility coverage) | `withTimeout` and `looksLikeError` tests | Done in **PBI-002** PR |
-| 2 (fake DAP) | In-process fake adapter exercising success and all-contexts-failed paths | Still deferred; will land with **PBI-003** (capability-detection tests need a tracker fake anyway) |
+| 2 (fake DAP) | In-process fake adapter exercising success and all-contexts-failed paths | Still deferred. PBI-003 chose to extract its tracker logic into a pure function and unit-test that instead, side-stepping the need for an adapter fake for capability detection. The fake-DAP machinery will land when a PBI actually requires it (likely PBI-004's frame-stability tests) and will be designed against that PBI's specific assertions rather than speculatively. |
 
 Rationale: the harness has its own plumbing risk (test-electron download pinning, headless `xvfb` on Linux, Electron version drift). Landing it on its own keeps any harness-level CI failure attributable instead of blamed on test logic. The fake-DAP work splits naturally with the PBIs that consume it - PBI-002's tests need truncation injection, PBI-003's tests need a tracker that omits `supportsClipboardContext`. Purpose-built fakes beat speculative generalization.
 
