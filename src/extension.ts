@@ -13,6 +13,12 @@ import {
   createCapabilityTracker,
   getSupportsClipboardContext,
 } from './util/clipboardCapability.js';
+import {
+  checkFrameStability,
+  SESSION_MOVED_MESSAGE,
+  type CapturedFrame,
+  type CurrentSnapshot,
+} from './util/frameStability.js';
 
 const COMMAND_ID = 'csharpDebugCopyAsJson.copyAsJson';
 const CONFIG_SECTION = 'csharpDebugCopyAsJson';
@@ -81,38 +87,46 @@ async function runCopyAsJsonInner(
   arg: IVariablesContext,
   context: vscode.ExtensionContext,
 ): Promise<void> {
-  const session = vscode.debug.activeDebugSession;
-  if (!session) {
+  // ------------------------------------------------------------------
+  // Pre-warning gates: synchronous, no awaits, so the user cannot step
+  // between these checks and the error toasts.
+  // ------------------------------------------------------------------
+  const initialSession = vscode.debug.activeDebugSession;
+  if (!initialSession) {
     showError('No active debug session.');
     return;
   }
 
   const cfg = vscode.workspace.getConfiguration(CONFIG_SECTION);
   const allowedTypes = cfg.get<string[]>('allowedDebugTypes', ['coreclr', 'clr']);
-  if (!allowedTypes.includes(session.type)) {
+  if (!allowedTypes.includes(initialSession.type)) {
     showError(
-      `Active debug session type '${session.type}' is not in csharpDebugCopyAsJson.allowedDebugTypes.`,
+      `Active debug session type '${initialSession.type}' is not in csharpDebugCopyAsJson.allowedDebugTypes.`,
     );
     return;
   }
 
-  if (arg && arg.sessionId && session.id !== arg.sessionId) {
-    showError('Active debug session changed; please re-trigger Copy as JSON.');
+  if (arg && arg.sessionId && initialSession.id !== arg.sessionId) {
+    // Menu invocation arg disagrees with the now-active session: focus moved
+    // between the right-click and the command callback.
+    showError(SESSION_MOVED_MESSAGE);
     return;
   }
 
-  const stackItem = vscode.debug.activeStackItem;
-  if (!stackItem || !(stackItem instanceof vscode.DebugStackFrame)) {
+  // Existence check (not capture). If the user invoked from the command
+  // palette without pausing, surface the friendly "you forgot to pause"
+  // message here, before the side-effect warning ever appears.
+  const preCheckFrame = vscode.debug.activeStackItem;
+  if (!preCheckFrame || !(preCheckFrame instanceof vscode.DebugStackFrame)) {
     showError(
       'No focused stack frame. Pause the debugger and select a frame in the Call Stack view, then try again.',
     );
     return;
   }
-  if (stackItem.session.id !== session.id) {
-    showError('Focused stack frame belongs to a different debug session.');
+  if (preCheckFrame.session.id !== initialSession.id) {
+    showError(SESSION_MOVED_MESSAGE);
     return;
   }
-  const frameId = stackItem.frameId;
 
   const target = resolveEvaluatableTarget(arg);
   if (!target.ok) {
@@ -120,11 +134,35 @@ async function runCopyAsJsonInner(
     return;
   }
 
+  // ------------------------------------------------------------------
+  // Side-effect warning (PBI-001) is shown here -- BEFORE we capture the
+  // frame id. On the first-ever invocation this is an await boundary the
+  // user can step over; capturing the frame after the dialog dismisses is
+  // what closes review item C2 (PBI-004). On every subsequent invocation
+  // the warning is a no-op (globalState says "shown"), so this re-ordering
+  // does not affect the steady-state flow.
+  // ------------------------------------------------------------------
   await maybeShowSideEffectWarning(context);
+
+  const traceEnabled = cfg.get<boolean>('trace', false);
+
+  // Re-capture after the warning. If the user clicked Continue or Step
+  // during the dialog, the frame is now gone or different and we abort
+  // with the canonical "session moved" message instead of letting an
+  // adapter-level "stale frame" error reach the user.
+  const captured = captureFrame(initialSession.id);
+  if (!captured.ok) {
+    trace(traceEnabled, `post-warning capture failed: ${captured.reason}`);
+    showError(captured.reason);
+    return;
+  }
+  trace(
+    traceEnabled,
+    `captured frame: sessionId=${captured.frame.sessionId}, frameId=${captured.frame.frameId}, threadId=${captured.frame.threadId}`,
+  );
 
   const timeoutMs = clampTimeout(cfg.get<number>('evaluateTimeoutMs', 8000));
   const preferNewtonsoft = cfg.get<boolean>('preferNewtonsoft', false);
-  const traceEnabled = cfg.get<boolean>('trace', false);
 
   const stjExpr = buildSystemTextJsonExpression(target.expression);
   const newtonExpr = buildNewtonsoftExpression(target.expression);
@@ -138,13 +176,26 @@ async function runCopyAsJsonInner(
         { label: 'Newtonsoft.Json', expression: newtonExpr },
       ];
 
-  const contexts = pickEvaluateContexts(session);
+  const contexts = pickEvaluateContexts(initialSession);
   trace(traceEnabled, `target = ${target.expression}`);
-  trace(traceEnabled, `frameId = ${frameId}, evaluate contexts = ${contexts.join(', ')}`);
+  trace(traceEnabled, `evaluate contexts = ${contexts.join(', ')}`);
 
   let lastError: string | undefined;
   for (const attempt of ordered) {
     for (const evalContext of contexts) {
+      // Re-validate before EVERY evaluate: each prior await (the previous
+      // attempt's customRequest, or the warning) is a step opportunity.
+      const stability = checkFrameStability(captured.frame, snapshotCurrent());
+      if (!stability.ok) {
+        trace(traceEnabled, `frame stability check failed: ${stability.reason}`);
+        showError(stability.reason);
+        return;
+      }
+      trace(
+        traceEnabled,
+        `re-validated frame: sessionId=${captured.frame.sessionId}, frameId=${captured.frame.frameId}`,
+      );
+
       const contextLabel = `${attempt.label} (${evalContext})`;
       trace(
         traceEnabled,
@@ -152,9 +203,9 @@ async function runCopyAsJsonInner(
       );
       try {
         const resp = await withTimeout(
-          session.customRequest('evaluate', {
+          initialSession.customRequest('evaluate', {
             expression: attempt.expression,
-            frameId,
+            frameId: captured.frame.frameId,
             context: evalContext,
           }) as Thenable<DapEvaluateResponse>,
           timeoutMs,
@@ -190,6 +241,60 @@ async function runCopyAsJsonInner(
   }
 
   showError(`Could not serialize: ${lastError ?? 'unknown error'}`);
+}
+
+/**
+ * Read the live `vscode.debug` state and return the focused frame iff it
+ * still belongs to `expectedSessionId`. Used immediately after the
+ * side-effect warning to detect a Continue/Step that fired while the dialog
+ * was open (PBI-004 / review item C2).
+ */
+function captureFrame(
+  expectedSessionId: string,
+):
+  | { ok: true; frame: CapturedFrame }
+  | { ok: false; reason: string } {
+  const session = vscode.debug.activeDebugSession;
+  if (!session || session.id !== expectedSessionId) {
+    return { ok: false, reason: SESSION_MOVED_MESSAGE };
+  }
+  const stackItem = vscode.debug.activeStackItem;
+  if (
+    !stackItem ||
+    !(stackItem instanceof vscode.DebugStackFrame) ||
+    stackItem.session.id !== expectedSessionId
+  ) {
+    return { ok: false, reason: SESSION_MOVED_MESSAGE };
+  }
+  return {
+    ok: true,
+    frame: {
+      sessionId: expectedSessionId,
+      frameId: stackItem.frameId,
+      threadId: stackItem.threadId,
+    },
+  };
+}
+
+/**
+ * Snapshot the live `vscode.debug` state into the shape `checkFrameStability`
+ * expects. Kept tiny and side-effect-free so that the per-attempt re-check
+ * loop adds negligible cost on the happy path.
+ */
+function snapshotCurrent(): CurrentSnapshot {
+  const session = vscode.debug.activeDebugSession;
+  const stackItem = vscode.debug.activeStackItem;
+  const isFrame = stackItem instanceof vscode.DebugStackFrame;
+  return {
+    activeSessionId: session?.id,
+    activeFrame: isFrame
+      ? {
+          sessionId: stackItem.session.id,
+          frameId: stackItem.frameId,
+          threadId: stackItem.threadId,
+        }
+      : undefined,
+  };
 }
 
 function pickEvaluateContexts(session: vscode.DebugSession): EvaluateContext[] {
