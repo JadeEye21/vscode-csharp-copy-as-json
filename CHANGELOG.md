@@ -13,6 +13,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Mirror the command on `debug/watch/context`.
 - Optional chunked retrieval for very large objects via `variablesReference` traversal.
 
+## [0.1.1] - 2026-04-27
+
+### CI
+
+- Release pipeline now downloads real VS Code 1.89 and runs the activation
+  smoke test (under `xvfb-run`) before publishing the VSIX, so a build that
+  fails to activate can no longer reach a GitHub Release. The
+  `RUN_E2E=1` real-coreclr-debugger test stays local-only by design.
+- Cache `.vscode-test/` in the release workflow (matches `ci.yml`) and
+  surface `VSCODE_TEST_VERSION` at the workflow level.
+
+
 ## [0.1.0] - 2026-04-27
 
 ### Added
