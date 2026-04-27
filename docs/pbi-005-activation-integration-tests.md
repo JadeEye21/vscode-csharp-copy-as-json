@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress.** Phase 1 (harness + activation smoke) is delivered by branch `feature/pbi-005-test-electron-harness`. Phase 2 items below are deferred and will be picked up alongside the PBIs that consume them.
+**Completed (partial).** Phase 1 (harness + activation smoke) shipped in v0.1.0. Phase 2 fake-DAP coverage remains deferred — tracked in [#25](https://github.com/JadeEye21/vscode-csharp-copy-as-json/issues/25) and will be picked up alongside the PBIs that consume it.
 
 | Phase | Items | Status |
 |---|---|---|

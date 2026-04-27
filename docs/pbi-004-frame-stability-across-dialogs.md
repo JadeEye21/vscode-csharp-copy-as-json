@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress.** Production code and unit tests delivered on `feature/pbi-004-frame-stability`.
+**Completed in v0.1.0.** Note: PBI-011 / C5 removed the post-side-effect-warning re-capture step (the modal warning is gone in v0.2.0); `checkFrameStability` from this PBI still runs per evaluate attempt and is unchanged.
 
 | Phase | Items | Status |
 |---|---|---|

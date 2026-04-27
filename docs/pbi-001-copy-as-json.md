@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented in `v0.0.1`. Awaiting UAT.
+**Completed in v0.0.1.**
 
 ## Goal
 

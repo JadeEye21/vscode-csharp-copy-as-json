@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Triggered by user-reported "already running" lock-up after a successful copy followed by an unrelated clipboard write, plus a request for instant-feel re-copy on the same paused frame. Inserts ahead of PBI-006 (which remains paused on `main`). Implementation of C2 forces a one-minor-version bump of the engine floor from `^1.89.0` to `^1.90.0`; see the corresponding decision row below.
+**Completed in v0.2.0.** Triggered by user-reported "already running" lock-up after a successful copy followed by an unrelated clipboard write, plus a request for instant-feel re-copy on the same paused frame. Shipped C1–C6 as scoped; C2 forced a one-minor-version bump of the engine floor from `^1.89.0` to `^1.90.0` — see the corresponding decision row below.
 
 ## Goal
 

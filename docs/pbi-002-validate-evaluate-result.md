@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress.** Branch `feature/pbi-002-validate-evaluate-result` extracts validation into pure modules, wires them into `extension.ts`, and adds unit tests covering C1 (truncation rejection) and R5 (looksLikeError regressions). R1 (repl-context echo stripping) is **explicitly deferred** - see "Deviations from plan" below.
+**Completed (partial) in v0.1.0.** Validation extracted into pure modules, wired into `extension.ts`, and unit-tested for C1 (truncation rejection) and R5 (`looksLikeError` regressions). R1 (repl-context echo stripping) is **explicitly deferred** — see "Deviations from plan" below.
 
 ## Goal
 
