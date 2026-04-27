@@ -13,7 +13,7 @@ env:
   # Keep this in sync with DEFAULT_VSCODE_VERSION in
   # src/test/integration/runIntegration.ts. The cache key below depends on it,
   # so bumping this value will invalidate the cache on the next run.
-  VSCODE_TEST_VERSION: 1.89.0
+  VSCODE_TEST_VERSION: 1.90.0
 
 jobs:
   build:

@@ -251,10 +251,45 @@ suite("e2e copy-as-json against real coreclr debugger", function () {
     await fs.writeFile(clipboardDumpAbs, clipboardText, "utf8");
     console.log(`[e2e] wrote clipboard payload to ${clipboardDumpAbs}`);
 
+    // -----------------------------------------------------------------
+    // PBI-011 / C1 + C2: second click on the same paused frame MUST be
+    // served from the frame-scoped result cache, not by issuing a second
+    // DAP evaluate. This is the regression test for the user-reported
+    // "Copy as JSON is already running for the previous variable" lock-up:
+    // after a successful copy, copying unrelated text (here we overwrite
+    // the clipboard with a fresh sentinel) and re-invoking the command on
+    // the same variable must restore the JSON instantly with no toast and
+    // no second adapter round-trip.
+    // -----------------------------------------------------------------
+    const SECOND_SENTINEL = "<sentinel: second click did not write>";
+    await vscode.env.clipboard.writeText(SECOND_SENTINEL);
+
+    await vscode.commands.executeCommand(COMMAND_ID, personArg);
+
+    const secondClipboardText = await waitForClipboardChange(
+      SECOND_SENTINEL,
+      CLIPBOARD_WAIT_MS,
+    );
+    if (secondClipboardText === SECOND_SENTINEL) {
+      const failTrace = await readTraceLog(traceLogAbs);
+      assert.fail(
+        `second click did not write to the clipboard within ${CLIPBOARD_WAIT_MS}ms; ` +
+          `the PBI-011 cache-hit path is broken (or the second invocation was ` +
+          `silently refused). Trace log (${traceLogAbs}):\n${failTrace}`,
+      );
+    }
+    assert.equal(
+      secondClipboardText,
+      clipboardText,
+      "second click on the same paused variable should write byte-for-byte " +
+        "the same JSON as the first click (served from the result cache)",
+    );
+
     // Capture the trace log NOW, while it's small and easy to attribute to
     // this command invocation. Reading after termination would still work
     // (the file persists), but capturing here keeps the assertion below
-    // attached to a single, unambiguous slice of the log.
+    // attached to a single, unambiguous slice of the log -- BOTH the first
+    // (real evaluate) and the second (cache hit) clicks above.
     const traceText = await readTraceLog(traceLogAbs);
 
     // -----------------------------------------------------------------
@@ -490,6 +525,43 @@ suite("e2e copy-as-json against real coreclr debugger", function () {
     assert.ok(
       !/^\[ERROR\]/m.test(traceText),
       `trace contains [ERROR] line -- command surfaced an error to the user:\n${traceText}`,
+    );
+
+    // -----------------------------------------------------------------
+    // PBI-011 cache-hit assertions on the SAME captured trace slice.
+    // The first click logged `evaluate (...)`; the second click MUST log
+    // `cache hit:` and MUST NOT log a second `evaluate (...)`.
+    // -----------------------------------------------------------------
+
+    assert.match(
+      traceText,
+      /cache hit: person /,
+      `expected a 'cache hit: person ...' line from the second click; ` +
+        `the cache-hit path did not fire. Trace:\n${traceText}`,
+    );
+
+    // Exactly ONE `evaluate (` line across both clicks. If we see two, the
+    // cache miss path ran on the second click -- meaning the lookup failed
+    // (key derivation regression) or invalidation fired prematurely.
+    const evaluateLineCount = (
+      traceText.match(/^\[[^\]]+\] evaluate \(/gm) ?? []
+    ).length;
+    assert.equal(
+      evaluateLineCount,
+      1,
+      `expected exactly 1 'evaluate (' line across both clicks (first hits ` +
+        `the adapter, second is a cache hit); got ${evaluateLineCount}. ` +
+        `Full trace:\n${traceText}`,
+    );
+
+    // The 'cancelled' code paths should NOT fire on a clean two-click flow
+    // where the first click fully resolved before the second started. If
+    // we see this line the cancel-and-replace dispatch is firing when it
+    // shouldn't (e.g. the previous CTS was not cleared in the finally).
+    assert.ok(
+      !/^\[[^\]]+\] cancelled/m.test(traceText),
+      `trace contains a 'cancelled' line -- the second click was treated as ` +
+        `a cancel-replace of the first, not as a fresh invocation. Trace:\n${traceText}`,
     );
   });
 });
