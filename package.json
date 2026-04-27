@@ -2,7 +2,7 @@
   "name": "vscode-csharp-copy-as-json",
   "displayName": "Copy as JSON (C# Debug)",
   "description": "Right-click a variable in the VS Code Variables view during a C#/.NET debug session and copy it to the clipboard as pretty-printed JSON.",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "publisher": "JadeEye21",
   "license": "MIT",
   "author": {
