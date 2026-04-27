@@ -1,3 +1,5 @@
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import * as vscode from 'vscode';
 import {
   buildNewtonsoftExpression,
@@ -34,10 +36,45 @@ interface DapEvaluateResponse {
 
 let inFlight = false;
 let output: vscode.OutputChannel | undefined;
+// Test-only file sink. When set (only happens under CSHARP_COPY_AS_JSON_E2E),
+// every trace() and showError() line is also appended here so the e2e test can
+// read it deterministically. We use sync fs.appendFileSync because:
+//   (a) lines are tiny (one log line per call);
+//   (b) we MUST avoid interleaved writes between the trace() that records the
+//       evaluate failure and the showError() that records the user-facing
+//       message -- async fs would let the showError write race ahead.
+// In production this stays undefined and writeE2eLog is a no-op.
+let e2eLogFile: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Copy as JSON');
   context.subscriptions.push(output);
+
+  // Test-only seam: when our e2e harness sets CSHARP_COPY_AS_JSON_E2E=1 in
+  // extensionTestsEnv, pre-seed the "first-run side-effect warning" flag so
+  // the modal does not block automation, and open a file-backed log sink in
+  // the workspace root so the test can read every trace/error line back. We
+  // use the env var (not a hidden command) because a registered command would
+  // otherwise leak into the user command palette. The check runs once at
+  // activation; no behavior change in production builds because no user sets
+  // this variable.
+  if (process.env.CSHARP_COPY_AS_JSON_E2E === '1') {
+    void context.globalState.update(SIDE_EFFECT_WARNING_KEY, true);
+    const wsFolder = vscode.workspace.workspaceFolders?.[0];
+    if (wsFolder) {
+      e2eLogFile = path.join(wsFolder.uri.fsPath, 'test.trace.log');
+      try {
+        // Truncate any leftover log from a previous run so we never
+        // confuse "this run produced no log" with "previous run's log".
+        fs.writeFileSync(e2eLogFile, '');
+      } catch {
+        // If we cannot create the file we silently fall back to no-sink;
+        // worst case the test sees the same opaque failure as before.
+        e2eLogFile = undefined;
+      }
+    }
+  }
+
   context.subscriptions.push(
     vscode.commands.registerCommand(COMMAND_ID, (arg: IVariablesContext) =>
       runCopyAsJson(arg, context),
@@ -65,6 +102,7 @@ export function activate(context: vscode.ExtensionContext): void {
 
 export function deactivate(): void {
   output = undefined;
+  e2eLogFile = undefined;
   inFlight = false;
 }
 
@@ -328,14 +366,23 @@ function errorMessage(err: unknown): string {
 }
 
 function trace(enabled: boolean, message: string): void {
+  const ts = new Date().toISOString();
+  // Always mirror to the e2e file sink (regardless of the user's `trace`
+  // setting) so the test sees every step. In production e2eLogFile is
+  // undefined and writeE2eLog is a no-op.
+  writeE2eLog(`[${ts}] ${message}`);
   if (!enabled || !output) {
     return;
   }
-  const ts = new Date().toISOString();
   output.appendLine(`[${ts}] ${message}`);
 }
 
 function showError(message: string): void {
+  // Mirror EVERY user-facing error to the e2e file sink, even when the
+  // user's trace setting is off. This is the line that tells the test why
+  // the command bailed (e.g. the actual evaluator error from STJ /
+  // Newtonsoft) when there is no clipboard write to inspect.
+  writeE2eLog(`[ERROR] ${message}`);
   void vscode.window
     .showErrorMessage(`Copy as JSON: ${message}`, 'View Logs')
     .then((choice) => {
@@ -343,6 +390,18 @@ function showError(message: string): void {
         output.show(true);
       }
     });
+}
+
+function writeE2eLog(line: string): void {
+  if (!e2eLogFile) {
+    return;
+  }
+  try {
+    fs.appendFileSync(e2eLogFile, line + '\n');
+  } catch {
+    // Sink failures must never fail the user's command. The test will see a
+    // shorter log than expected and surface that itself.
+  }
 }
 
 async function maybeShowSideEffectWarning(context: vscode.ExtensionContext): Promise<void> {
