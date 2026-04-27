@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/JadeEye21/vscode-csharp-copy-as-json/actions/workflows/ci.yml/badge.svg)](https://github.com/JadeEye21/vscode-csharp-copy-as-json/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![VS Code engine](https://img.shields.io/badge/vscode-%5E1.89.0-blue.svg)](https://code.visualstudio.com/updates/v1_89)
+[![VS Code engine](https://img.shields.io/badge/vscode-%5E1.90.0-blue.svg)](https://code.visualstudio.com/updates/v1_90)
 
 Right-click a variable in the VS Code **Variables** view during a C# / .NET debug session and copy it to the clipboard as pretty-printed JSON.
 
@@ -26,7 +26,9 @@ Until the extension is on the Marketplace, install it from a VSIX:
 3. Right-click the variable &rarr; **Copy as JSON**.
 4. Paste anywhere.
 
-The first time you use the command in a workspace you will see a one-time information message about side effects (see [Limitations](#limitations)).
+Re-copying the same variable on the same paused frame is served from a frame-scoped in-memory cache &mdash; no DAP round-trip, no extra side effects. The cache is invalidated whenever you step, continue, switch frames in the **Call Stack** view, or end the session. Clicking the command again while a previous evaluate is still in flight cancels the previous and starts the new one (last click wins).
+
+The first time you use the command on a fresh install, a one-time disclosure about side effects is appended to the **Copy as JSON** output channel (see [Limitations](#limitations)). Every subsequent invocation flashes a transient status-bar reminder that the command evaluates expressions in the debuggee process; you can mute that reminder via `csharpDebugCopyAsJson.showSideEffectReminder`.
 
 ## Settings
 
@@ -35,7 +37,8 @@ The first time you use the command in a workspace you will see a one-time inform
 | `csharpDebugCopyAsJson.allowedDebugTypes` | `["coreclr","clr"]` | Debug adapter types the runtime guard accepts. |
 | `csharpDebugCopyAsJson.evaluateTimeoutMs` | `8000` | Per-attempt timeout for the DAP `evaluate` call. Increase for big object graphs. |
 | `csharpDebugCopyAsJson.preferNewtonsoft` | `false` | Try `Newtonsoft.Json` before `System.Text.Json`. Useful when your project's serialization rules are Newtonsoft-flavored. |
-| `csharpDebugCopyAsJson.trace` | `false` | Write expression / DAP / fallback diagnostics to the **Copy as JSON** output channel. Off by default to avoid persisting variable values to logs. |
+| `csharpDebugCopyAsJson.trace` | `false` | Write expression / DAP / fallback / cache-hit diagnostics to the **Copy as JSON** output channel. Off by default to avoid persisting variable values to logs. |
+| `csharpDebugCopyAsJson.showSideEffectReminder` | `true` | Show a transient status-bar reminder on every invocation that the command evaluates expressions in the debuggee process. Set to `false` once you are familiar with the behavior. The one-time output-channel disclosure is unaffected. |
 
 ## Limitations
 
@@ -45,6 +48,8 @@ The first time you use the command in a workspace you will see a one-time inform
 - **Synthesized debugger nodes** like `[Raw View]` and `Static members` cannot be evaluated by name and will produce a clear error.
 - **Truncation.** The .NET adapter may still cap very long strings even with `clipboard` evaluate context. If you hit a limit, increase `csharpDebugCopyAsJson.evaluateTimeoutMs` and/or restructure the variable being serialized.
 - **One session at a time.** If the active debug session changes between right-clicking and the command running, the extension aborts safely with a message.
+- **Cancelled evaluates still run in the debuggee.** When you click the command twice in quick succession the second click cancels the first inside the extension, but the underlying DAP `evaluate` request cannot be aborted &mdash; the debugger still completes the cancelled call. Side effects from the cancelled invocation can still occur even though only one result reaches the clipboard.
+- **Cache is best-effort within a paused frame.** The frame-scoped result cache assumes the variable's serialized form is stable while the frame is paused. Evaluating side-effecting expressions elsewhere (Debug Console, Watch view) between two **Copy as JSON** clicks on the same frame can return stale JSON from the cache.
 
 ## Troubleshooting
 

@@ -12,6 +12,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Add an icon (128x128 PNG).
 - Mirror the command on `debug/watch/context`.
 - Optional chunked retrieval for very large objects via `variablesReference` traversal.
+- PBI-006 user-visible polish (ref-struct refusal, codicon, centralized message strings, `noDebug` skip).
+
+## [0.2.0] - 2026-04-27
+
+### Breaking
+
+- **Engine floor bumped from `^1.89.0` to `^1.90.0`.** The cache invalidation in PBI-011 / C2 subscribes to `vscode.debug.onDidChangeActiveStackItem` at activation time, and that event (along with the `vscode.debug.activeStackItem` property used since PBI-004) is part of the `debugFocus` proposal that VS Code only finalized in 1.90.0 (microsoft/vscode#212190, May 2024). On 1.89.x the activation throws and the extension fails to load. The matching workflow-level `VSCODE_TEST_VERSION` and the `runIntegration.ts` `DEFAULT_VSCODE_VERSION` are bumped in lockstep so the activation-smoke gate continues to run against the actual floor. **Action required for users on VS Code 1.89.x: upgrade to 1.90.0 or later.** This also incidentally fixes a latent issue in 0.1.x where invoking **Copy as JSON** on a 1.89.x host would have thrown at command-time on the `vscode.debug.activeStackItem` read (the floor was advertised as 1.89 but the API only became stable in 1.90).
+
+### Changed
+
+- **Real-time re-copy via frame-scoped cache.** Re-copying the same variable on the same paused frame is now served from an in-memory cache keyed by `(sessionId, threadId, frameId, expression)`. No DAP round-trip, no extra side effects. The cache is invalidated on `onDidChangeActiveStackItem` (step / continue / Call Stack frame switch) and on `onDidTerminateDebugSession` (PBI-011 / C1, C2).
+- **Cancel-and-replace dispatch.** Clicking **Copy as JSON** while a previous evaluate is still in flight now cancels the previous via `CancellationTokenSource` and starts the new one. The "Copy as JSON is already running for the previous variable" toast is removed entirely. Last click wins the clipboard. (PBI-011 / C3.)
+- **Per-session winning-context memo.** The first DAP `evaluate` context (`clipboard` / `hover` / `repl`) that returns a parseable result for a session is tried first on subsequent invocations in that session; on session terminate the memo is cleared. Cuts cold-path latency for everything after the first variable. (PBI-011 / C4.)
+- **Non-blocking side-effect notice.** The first-use modal-ish information dialog is replaced by (a) a one-time disclosure line appended to the **Copy as JSON** output channel on first invocation per install (gated by the existing `globalState` key, so upgrading users who already dismissed the dialog do not see the disclosure again), and (b) a per-invocation transient status-bar reminder controllable by the new `csharpDebugCopyAsJson.showSideEffectReminder` setting. (PBI-011 / C5.)
+- **Status-bar dispatch feedback.** Every invocation immediately shows a `$(sync~spin) Copy as JSON…` status-bar message that is cleared on success, cache hit, failure, or cancel. Cache hits and evaluate successes show distinct success messages so the cache is observable. (PBI-011 / C6.)
+
+### Added
+
+- New setting `csharpDebugCopyAsJson.showSideEffectReminder` (default `true`).
+- New module `src/util/resultCache.ts` (`ResultCache` class) with full unit-test coverage for `put` / `get` / `clearThread` / `clearSession` / `clearAll`, including key-collision and overlapping-numeric-prefix edge cases.
+
+### Removed
+
+- The `inFlight` boolean and the `Copy as JSON is already running` information toast.
+- The `maybeShowSideEffectWarning` modal information dialog and the post-warning `captureFrame` re-validation step. With no awaitable dialog between target resolution and the evaluate loop, the captured frame is still re-validated per attempt by the existing `checkFrameStability` gate (PBI-004), which is unchanged.
 
 ## [0.1.1] - 2026-04-27
 

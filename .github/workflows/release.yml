@@ -12,7 +12,7 @@ env:
   # Keep in sync with DEFAULT_VSCODE_VERSION in
   # src/test/integration/runIntegration.ts and with VSCODE_TEST_VERSION
   # in .github/workflows/ci.yml. The cache key below depends on it.
-  VSCODE_TEST_VERSION: 1.89.0
+  VSCODE_TEST_VERSION: 1.90.0
 
 jobs:
   release:

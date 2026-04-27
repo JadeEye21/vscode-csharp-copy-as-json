@@ -11,7 +11,7 @@ import { unescapeCsharpString } from './util/unescape.js';
 import { validateEvaluateResult } from './util/validate.js';
 import { withTimeout } from './util/withTimeout.js';
 import {
-  clearSession,
+  clearSession as clearCapabilitySession,
   createCapabilityTracker,
   getSupportsClipboardContext,
 } from './util/clipboardCapability.js';
@@ -21,6 +21,7 @@ import {
   type CapturedFrame,
   type CurrentSnapshot,
 } from './util/frameStability.js';
+import { ResultCache } from './util/resultCache.js';
 
 const COMMAND_ID = 'csharpDebugCopyAsJson.copyAsJson';
 const CONFIG_SECTION = 'csharpDebugCopyAsJson';
@@ -34,42 +35,52 @@ interface DapEvaluateResponse {
   variablesReference?: number;
 }
 
-let inFlight = false;
 let output: vscode.OutputChannel | undefined;
-// Test-only file sink. When set (only happens under CSHARP_COPY_AS_JSON_E2E),
-// every trace() and showError() line is also appended here so the e2e test can
-// read it deterministically. We use sync fs.appendFileSync because:
-//   (a) lines are tiny (one log line per call);
-//   (b) we MUST avoid interleaved writes between the trace() that records the
-//       evaluate failure and the showError() that records the user-facing
-//       message -- async fs would let the showError write race ahead.
-// In production this stays undefined and writeE2eLog is a no-op.
+// Test-only file sink. See PBI-005 / PBI-010 for why this exists.
 let e2eLogFile: string | undefined;
+
+// PBI-011 module-level state ------------------------------------------------
+//
+// `currentCts` is the cancellation source for the in-flight `runCopyAsJson`
+// invocation. A second click cancels and disposes the previous source before
+// installing a new one. `Promise.race`-style cancellation on the awaits
+// alone is not enough; every await checks `token.isCancellationRequested`
+// before performing side effects (clipboard write, cache put), because the
+// underlying DAP `customRequest` cannot itself be aborted.
+let currentCts: vscode.CancellationTokenSource | undefined;
+
+// `lastActiveStackItem` tracks the previously-focused frame so that
+// `onDidChangeActiveStackItem` can invalidate that thread's cache entries.
+// We invalidate both the previous thread AND the new thread on every
+// change; this is intentionally over-eager (per the PBI-011 "stricter"
+// invalidation rule confirmed by the user), and never serves stale data.
+let lastActiveStackItem: { sessionId: string; threadId: number } | undefined;
+
+const resultCache = new ResultCache();
+
+// Memo of the first DAP `evaluate` context that returned a parseable result
+// for a session. On subsequent invocations in the same session we try this
+// context first before falling through the rest of the chain. Cleared on
+// session terminate.
+const winningContext = new Map<string, EvaluateContext>();
+// ---------------------------------------------------------------------------
 
 export function activate(context: vscode.ExtensionContext): void {
   output = vscode.window.createOutputChannel('Copy as JSON');
   context.subscriptions.push(output);
 
   // Test-only seam: when our e2e harness sets CSHARP_COPY_AS_JSON_E2E=1 in
-  // extensionTestsEnv, pre-seed the "first-run side-effect warning" flag so
-  // the modal does not block automation, and open a file-backed log sink in
-  // the workspace root so the test can read every trace/error line back. We
-  // use the env var (not a hidden command) because a registered command would
-  // otherwise leak into the user command palette. The check runs once at
-  // activation; no behavior change in production builds because no user sets
-  // this variable.
+  // extensionTestsEnv, pre-seed the disclosure-shown flag so the one-time
+  // output-channel notice does not pollute the test log, and open a
+  // file-backed sink in the workspace root.
   if (process.env.CSHARP_COPY_AS_JSON_E2E === '1') {
     void context.globalState.update(SIDE_EFFECT_WARNING_KEY, true);
     const wsFolder = vscode.workspace.workspaceFolders?.[0];
     if (wsFolder) {
       e2eLogFile = path.join(wsFolder.uri.fsPath, 'test.trace.log');
       try {
-        // Truncate any leftover log from a previous run so we never
-        // confuse "this run produced no log" with "previous run's log".
         fs.writeFileSync(e2eLogFile, '');
       } catch {
-        // If we cannot create the file we silently fall back to no-sink;
-        // worst case the test sees the same opaque failure as before.
         e2eLogFile = undefined;
       }
     }
@@ -80,12 +91,7 @@ export function activate(context: vscode.ExtensionContext): void {
       runCopyAsJson(arg, context),
     ),
   );
-  // Watch every debug session's InitializeResponse so we know, authoritatively,
-  // whether the adapter supports DAP `evaluate` with `context: 'clipboard'`.
-  // Registered for `'*'` rather than `coreclr`/`clr` because the user can
-  // override `csharpDebugCopyAsJson.allowedDebugTypes`; the cost of a no-op
-  // tracker on unrelated sessions (one closure, one event subscription) is
-  // negligible compared to silently demoting the user to `hover`.
+
   context.subscriptions.push(
     vscode.debug.registerDebugAdapterTrackerFactory('*', {
       createDebugAdapterTracker(session) {
@@ -93,9 +99,34 @@ export function activate(context: vscode.ExtensionContext): void {
       },
     }),
   );
+
+  // PBI-011 / C2: result-cache invalidation. `onDidChangeActiveStackItem`
+  // fires for stepping, continuing, and Call-Stack-view frame switching;
+  // all three cases need the cache eviction (per AC #4).
+  context.subscriptions.push(
+    vscode.debug.onDidChangeActiveStackItem(() => {
+      const previous = lastActiveStackItem;
+      if (previous) {
+        resultCache.clearThread(previous.sessionId, previous.threadId);
+      }
+      const stackItem = vscode.debug.activeStackItem;
+      if (stackItem instanceof vscode.DebugStackFrame) {
+        resultCache.clearThread(stackItem.session.id, stackItem.threadId);
+        lastActiveStackItem = {
+          sessionId: stackItem.session.id,
+          threadId: stackItem.threadId,
+        };
+      } else {
+        lastActiveStackItem = undefined;
+      }
+    }),
+  );
+
   context.subscriptions.push(
     vscode.debug.onDidTerminateDebugSession((session) => {
-      clearSession(session.id);
+      clearCapabilitySession(session.id);
+      resultCache.clearSession(session.id);
+      winningContext.delete(session.id);
     }),
   );
 }
@@ -103,32 +134,45 @@ export function activate(context: vscode.ExtensionContext): void {
 export function deactivate(): void {
   output = undefined;
   e2eLogFile = undefined;
-  inFlight = false;
+  if (currentCts) {
+    currentCts.cancel();
+    currentCts.dispose();
+    currentCts = undefined;
+  }
+  resultCache.clearAll();
+  winningContext.clear();
+  lastActiveStackItem = undefined;
 }
 
-async function runCopyAsJson(arg: IVariablesContext, context: vscode.ExtensionContext): Promise<void> {
-  if (inFlight) {
-    void vscode.window.showInformationMessage(
-      'Copy as JSON is already running for the previous variable. Wait for it to finish.',
-    );
-    return;
+async function runCopyAsJson(
+  arg: IVariablesContext,
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  // PBI-011 / C3: cancel-and-replace dispatch. The previous in-flight
+  // invocation is cancelled and disposed; its DAP `evaluate` call may still
+  // execute in the debuggee (we cannot abort that), but the extension will
+  // ignore its response.
+  if (currentCts) {
+    currentCts.cancel();
+    currentCts.dispose();
   }
-  inFlight = true;
+  const cts = new vscode.CancellationTokenSource();
+  currentCts = cts;
   try {
-    await runCopyAsJsonInner(arg, context);
+    await runCopyAsJsonInner(arg, context, cts.token);
   } finally {
-    inFlight = false;
+    if (currentCts === cts) {
+      currentCts = undefined;
+    }
+    cts.dispose();
   }
 }
 
 async function runCopyAsJsonInner(
   arg: IVariablesContext,
   context: vscode.ExtensionContext,
+  token: vscode.CancellationToken,
 ): Promise<void> {
-  // ------------------------------------------------------------------
-  // Pre-warning gates: synchronous, no awaits, so the user cannot step
-  // between these checks and the error toasts.
-  // ------------------------------------------------------------------
   const initialSession = vscode.debug.activeDebugSession;
   if (!initialSession) {
     showError('No active debug session.');
@@ -145,23 +189,18 @@ async function runCopyAsJsonInner(
   }
 
   if (arg && arg.sessionId && initialSession.id !== arg.sessionId) {
-    // Menu invocation arg disagrees with the now-active session: focus moved
-    // between the right-click and the command callback.
     showError(SESSION_MOVED_MESSAGE);
     return;
   }
 
-  // Existence check (not capture). If the user invoked from the command
-  // palette without pausing, surface the friendly "you forgot to pause"
-  // message here, before the side-effect warning ever appears.
-  const preCheckFrame = vscode.debug.activeStackItem;
-  if (!preCheckFrame || !(preCheckFrame instanceof vscode.DebugStackFrame)) {
+  const stackItem = vscode.debug.activeStackItem;
+  if (!stackItem || !(stackItem instanceof vscode.DebugStackFrame)) {
     showError(
       'No focused stack frame. Pause the debugger and select a frame in the Call Stack view, then try again.',
     );
     return;
   }
-  if (preCheckFrame.session.id !== initialSession.id) {
+  if (stackItem.session.id !== initialSession.id) {
     showError(SESSION_MOVED_MESSAGE);
     return;
   }
@@ -172,153 +211,187 @@ async function runCopyAsJsonInner(
     return;
   }
 
-  // ------------------------------------------------------------------
-  // Side-effect warning (PBI-001) is shown here -- BEFORE we capture the
-  // frame id. On the first-ever invocation this is an await boundary the
-  // user can step over; capturing the frame after the dialog dismisses is
-  // what closes review item C2 (PBI-004). On every subsequent invocation
-  // the warning is a no-op (globalState says "shown"), so this re-ordering
-  // does not affect the steady-state flow.
-  // ------------------------------------------------------------------
-  await maybeShowSideEffectWarning(context);
+  const captured: CapturedFrame = {
+    sessionId: initialSession.id,
+    frameId: stackItem.frameId,
+    threadId: stackItem.threadId,
+  };
 
   const traceEnabled = cfg.get<boolean>('trace', false);
 
-  // Re-capture after the warning. If the user clicked Continue or Step
-  // during the dialog, the frame is now gone or different and we abort
-  // with the canonical "session moved" message instead of letting an
-  // adapter-level "stale frame" error reach the user.
-  const captured = captureFrame(initialSession.id);
-  if (!captured.ok) {
-    trace(traceEnabled, `post-warning capture failed: ${captured.reason}`);
-    showError(captured.reason);
+  // PBI-011 / C1: cache lookup. A hit short-circuits the entire DAP path.
+  const cached = resultCache.get(
+    captured.sessionId,
+    captured.threadId,
+    captured.frameId,
+    target.expression,
+  );
+  if (cached !== undefined) {
+    if (token.isCancellationRequested) {
+      return;
+    }
+    await vscode.env.clipboard.writeText(cached);
+    if (token.isCancellationRequested) {
+      return;
+    }
+    trace(
+      traceEnabled,
+      `cache hit: ${target.expression} (${cached.length} chars)`,
+    );
+    void vscode.window.setStatusBarMessage(
+      `$(check) Copied ${cached.length} chars as JSON (cached)`,
+      4000,
+    );
     return;
   }
-  trace(
-    traceEnabled,
-    `captured frame: sessionId=${captured.frame.sessionId}, frameId=${captured.frame.frameId}, threadId=${captured.frame.threadId}`,
+
+  // ----- Cache miss: evaluate path -----
+
+  // PBI-011 / C5a: one-time output-channel disclosure on first invocation
+  // per install. Replaces the previous modal-ish info-message dialog. The
+  // existing `SIDE_EFFECT_WARNING_KEY` is reused so users who already
+  // dismissed the old dialog do not see the disclosure again.
+  maybeShowOneTimeDisclosure(context);
+
+  // PBI-011 / C5b: per-invocation transient reminder. Suppressed when the
+  // user has set `showSideEffectReminder: false`.
+  const showReminder = cfg.get<boolean>('showSideEffectReminder', true);
+  if (showReminder) {
+    void vscode.window.setStatusBarMessage(
+      '$(info) Copy as JSON: evaluating in debuggee process',
+      3000,
+    );
+  }
+
+  // PBI-011 / C6: dispatch spinner. Disposed in the `finally` so cancel,
+  // failure, and success all clear the spin promptly.
+  const spinDisposable = vscode.window.setStatusBarMessage(
+    '$(sync~spin) Copy as JSON\u2026',
   );
 
-  const timeoutMs = clampTimeout(cfg.get<number>('evaluateTimeoutMs', 8000));
-  const preferNewtonsoft = cfg.get<boolean>('preferNewtonsoft', false);
+  try {
+    const timeoutMs = clampTimeout(cfg.get<number>('evaluateTimeoutMs', 8000));
+    const preferNewtonsoft = cfg.get<boolean>('preferNewtonsoft', false);
 
-  const stjExpr = buildSystemTextJsonExpression(target.expression);
-  const newtonExpr = buildNewtonsoftExpression(target.expression);
-  const ordered = preferNewtonsoft
-    ? [
-        { label: 'Newtonsoft.Json', expression: newtonExpr },
-        { label: 'System.Text.Json', expression: stjExpr },
-      ]
-    : [
-        { label: 'System.Text.Json', expression: stjExpr },
-        { label: 'Newtonsoft.Json', expression: newtonExpr },
-      ];
+    const stjExpr = buildSystemTextJsonExpression(target.expression);
+    const newtonExpr = buildNewtonsoftExpression(target.expression);
+    const ordered = preferNewtonsoft
+      ? [
+          { label: 'Newtonsoft.Json', expression: newtonExpr },
+          { label: 'System.Text.Json', expression: stjExpr },
+        ]
+      : [
+          { label: 'System.Text.Json', expression: stjExpr },
+          { label: 'Newtonsoft.Json', expression: newtonExpr },
+        ];
 
-  const contexts = pickEvaluateContexts(initialSession);
-  trace(traceEnabled, `target = ${target.expression}`);
-  trace(traceEnabled, `evaluate contexts = ${contexts.join(', ')}`);
+    // PBI-011 / C4: try the per-session winning context first.
+    const baseContexts = pickEvaluateContexts(initialSession);
+    const memo = winningContext.get(initialSession.id);
+    const contexts: EvaluateContext[] =
+      memo && baseContexts.includes(memo)
+        ? [memo, ...baseContexts.filter((c) => c !== memo)]
+        : baseContexts;
 
-  let lastError: string | undefined;
-  for (const attempt of ordered) {
-    for (const evalContext of contexts) {
-      // Re-validate before EVERY evaluate: each prior await (the previous
-      // attempt's customRequest, or the warning) is a step opportunity.
-      const stability = checkFrameStability(captured.frame, snapshotCurrent());
-      if (!stability.ok) {
-        trace(traceEnabled, `frame stability check failed: ${stability.reason}`);
-        showError(stability.reason);
-        return;
-      }
-      trace(
-        traceEnabled,
-        `re-validated frame: sessionId=${captured.frame.sessionId}, frameId=${captured.frame.frameId}`,
-      );
+    trace(traceEnabled, `target = ${target.expression}`);
+    trace(traceEnabled, `evaluate contexts = ${contexts.join(', ')}`);
 
-      const contextLabel = `${attempt.label} (${evalContext})`;
-      trace(
-        traceEnabled,
-        `evaluate (${contextLabel}): ${attempt.expression}`,
-      );
-      try {
-        const resp = await withTimeout(
-          initialSession.customRequest('evaluate', {
-            expression: attempt.expression,
-            frameId: captured.frame.frameId,
-            context: evalContext,
-          }) as Thenable<DapEvaluateResponse>,
-          timeoutMs,
-          `${contextLabel} evaluate`,
-        );
-        const validation = validateEvaluateResult(
-          resp?.result,
-          unescapeCsharpString,
-          contextLabel,
-        );
-        if (validation.ok) {
-          await vscode.env.clipboard.writeText(validation.json);
-          trace(
-            traceEnabled,
-            `success: copied ${validation.json.length} chars to clipboard via ${contextLabel}`,
-          );
-          void vscode.window.setStatusBarMessage(
-            `$(clippy) Copied ${validation.json.length} chars as JSON via ${attempt.label}`,
-            4000,
-          );
+    let lastError: string | undefined;
+    for (const attempt of ordered) {
+      for (const evalContext of contexts) {
+        if (token.isCancellationRequested) {
+          trace(traceEnabled, 'cancelled');
           return;
         }
-        lastError = validation.reason;
+        const stability = checkFrameStability(captured, snapshotCurrent());
+        if (!stability.ok) {
+          trace(
+            traceEnabled,
+            `frame stability check failed: ${stability.reason}`,
+          );
+          showError(stability.reason);
+          return;
+        }
+        const contextLabel = `${attempt.label} (${evalContext})`;
         trace(
           traceEnabled,
-          `validation failed: ${validation.reason}; raw=${JSON.stringify(resp)}`,
+          `evaluate (${contextLabel}): ${attempt.expression}`,
         );
-      } catch (err) {
-        lastError = errorMessage(err);
-        trace(traceEnabled, `error: ${lastError}`);
+        try {
+          const resp = await withTimeout(
+            initialSession.customRequest('evaluate', {
+              expression: attempt.expression,
+              frameId: captured.frameId,
+              context: evalContext,
+            }) as Thenable<DapEvaluateResponse>,
+            timeoutMs,
+            `${contextLabel} evaluate`,
+          );
+          if (token.isCancellationRequested) {
+            trace(traceEnabled, 'cancelled after evaluate');
+            return;
+          }
+          const validation = validateEvaluateResult(
+            resp?.result,
+            unescapeCsharpString,
+            contextLabel,
+          );
+          if (validation.ok) {
+            if (token.isCancellationRequested) {
+              trace(traceEnabled, 'cancelled before clipboard write');
+              return;
+            }
+            await vscode.env.clipboard.writeText(validation.json);
+            // Re-check after the clipboard write: a later click may have
+            // already overwritten our value, in which case we must NOT
+            // poison the cache with the stale entry. We still leave the
+            // clipboard alone -- the later click wrote intentionally.
+            if (token.isCancellationRequested) {
+              trace(
+                traceEnabled,
+                'cancelled after clipboard write; not caching',
+              );
+              return;
+            }
+            resultCache.put(
+              captured.sessionId,
+              captured.threadId,
+              captured.frameId,
+              target.expression,
+              validation.json,
+            );
+            winningContext.set(initialSession.id, evalContext);
+            trace(
+              traceEnabled,
+              `success: copied ${validation.json.length} chars to clipboard via ${contextLabel}`,
+            );
+            void vscode.window.setStatusBarMessage(
+              `$(check) Copied ${validation.json.length} chars as JSON via ${attempt.label}`,
+              4000,
+            );
+            return;
+          }
+          lastError = validation.reason;
+          trace(
+            traceEnabled,
+            `validation failed: ${validation.reason}; raw=${JSON.stringify(resp)}`,
+          );
+        } catch (err) {
+          lastError = errorMessage(err);
+          trace(traceEnabled, `error: ${lastError}`);
+        }
       }
     }
-  }
 
-  showError(`Could not serialize: ${lastError ?? 'unknown error'}`);
+    if (token.isCancellationRequested) {
+      return;
+    }
+    showError(`Could not serialize: ${lastError ?? 'unknown error'}`);
+  } finally {
+    spinDisposable.dispose();
+  }
 }
 
-/**
- * Read the live `vscode.debug` state and return the focused frame iff it
- * still belongs to `expectedSessionId`. Used immediately after the
- * side-effect warning to detect a Continue/Step that fired while the dialog
- * was open (PBI-004 / review item C2).
- */
-function captureFrame(
-  expectedSessionId: string,
-):
-  | { ok: true; frame: CapturedFrame }
-  | { ok: false; reason: string } {
-  const session = vscode.debug.activeDebugSession;
-  if (!session || session.id !== expectedSessionId) {
-    return { ok: false, reason: SESSION_MOVED_MESSAGE };
-  }
-  const stackItem = vscode.debug.activeStackItem;
-  if (
-    !stackItem ||
-    !(stackItem instanceof vscode.DebugStackFrame) ||
-    stackItem.session.id !== expectedSessionId
-  ) {
-    return { ok: false, reason: SESSION_MOVED_MESSAGE };
-  }
-  return {
-    ok: true,
-    frame: {
-      sessionId: expectedSessionId,
-      frameId: stackItem.frameId,
-      threadId: stackItem.threadId,
-    },
-  };
-}
-
-/**
- * Snapshot the live `vscode.debug` state into the shape `checkFrameStability`
- * expects. Kept tiny and side-effect-free so that the per-attempt re-check
- * loop adds negligible cost on the happy path.
- */
 function snapshotCurrent(): CurrentSnapshot {
   const session = vscode.debug.activeDebugSession;
   const stackItem = vscode.debug.activeStackItem;
@@ -337,11 +410,7 @@ function snapshotCurrent(): CurrentSnapshot {
 
 function pickEvaluateContexts(session: vscode.DebugSession): EvaluateContext[] {
   // The cache is populated by the DebugAdapterTracker we register in
-  // `activate`. A cache miss means we never observed an InitializeResponse for
-  // this session - either the tracker was registered too late (impossible
-  // given `onDebug` activation) or the adapter never sent capabilities. The
-  // safe default is `false`: skip `clipboard` and use `hover -> repl`, which
-  // is what every adapter is required to support.
+  // `activate`. A cache miss means we never observed an InitializeResponse.
   const supports = getSupportsClipboardContext(session.id) === true;
   return supports ? ['clipboard', 'hover', 'repl'] : ['hover', 'repl'];
 }
@@ -367,9 +436,6 @@ function errorMessage(err: unknown): string {
 
 function trace(enabled: boolean, message: string): void {
   const ts = new Date().toISOString();
-  // Always mirror to the e2e file sink (regardless of the user's `trace`
-  // setting) so the test sees every step. In production e2eLogFile is
-  // undefined and writeE2eLog is a no-op.
   writeE2eLog(`[${ts}] ${message}`);
   if (!enabled || !output) {
     return;
@@ -378,10 +444,6 @@ function trace(enabled: boolean, message: string): void {
 }
 
 function showError(message: string): void {
-  // Mirror EVERY user-facing error to the e2e file sink, even when the
-  // user's trace setting is off. This is the line that tells the test why
-  // the command bailed (e.g. the actual evaluator error from STJ /
-  // Newtonsoft) when there is no clipboard write to inspect.
   writeE2eLog(`[ERROR] ${message}`);
   void vscode.window
     .showErrorMessage(`Copy as JSON: ${message}`, 'View Logs')
@@ -399,23 +461,25 @@ function writeE2eLog(line: string): void {
   try {
     fs.appendFileSync(e2eLogFile, line + '\n');
   } catch {
-    // Sink failures must never fail the user's command. The test will see a
-    // shorter log than expected and surface that itself.
+    // Sink failures must never fail the user's command.
   }
 }
 
-async function maybeShowSideEffectWarning(context: vscode.ExtensionContext): Promise<void> {
-  const shown = context.globalState.get<boolean>(SIDE_EFFECT_WARNING_KEY, false);
+function maybeShowOneTimeDisclosure(context: vscode.ExtensionContext): void {
+  const shown = context.globalState.get<boolean>(
+    SIDE_EFFECT_WARNING_KEY,
+    false,
+  );
   if (shown) {
     return;
   }
-  const choice = await vscode.window.showInformationMessage(
-    "Copy as JSON evaluates 'JsonSerializer.Serialize' inside your debugged process. " +
-      'This invokes property getters and constructors, which may have side effects, allocate memory, or throw.',
-    'Got it',
-    "Don't show again",
-  );
-  if (choice === "Don't show again" || choice === 'Got it') {
-    await context.globalState.update(SIDE_EFFECT_WARNING_KEY, true);
+  if (output) {
+    output.appendLine(
+      '[disclosure] Copy as JSON evaluates JsonSerializer.Serialize inside ' +
+        'your debugged process. This invokes property getters and ' +
+        'constructors, which may have side effects, allocate memory, or ' +
+        'throw. See README for details. (Shown once per install.)',
+    );
   }
+  void context.globalState.update(SIDE_EFFECT_WARNING_KEY, true);
 }

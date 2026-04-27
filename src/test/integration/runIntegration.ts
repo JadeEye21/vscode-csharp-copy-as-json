@@ -9,7 +9,14 @@ import {
 // Pin to our engines.vscode floor so a passing CI run proves the
 // minimum-supported promise still holds. Override with VSCODE_TEST_VERSION
 // (e.g. "stable" or "insiders") for ad-hoc runs against newer builds.
-const DEFAULT_VSCODE_VERSION = "1.89.0";
+//
+// 1.90.0 is the floor because PBI-011 / C2 subscribes to
+// `vscode.debug.onDidChangeActiveStackItem` at activation time, and that API
+// (along with `vscode.debug.activeStackItem`, used since PBI-004) graduated
+// from the `debugFocus` proposal to stable in VS Code 1.90.0
+// (microsoft/vscode#212190, May 2024 milestone). On 1.89.x the activation
+// throws because the host blocks unapproved use of proposed APIs.
+const DEFAULT_VSCODE_VERSION = "1.90.0";
 
 // E2E mode: honor RUN_E2E=1 to exercise the real coreclr debugger against
 // the test-fixtures/csharp-sample project. This requires a different VS Code
