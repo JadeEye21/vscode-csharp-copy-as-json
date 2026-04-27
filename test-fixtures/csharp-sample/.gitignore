@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+# E2E test artifacts: the e2e test dumps the clipboard payload here after
+# invoking the copyAsJson command (test.json) and extension.ts mirrors
+# trace/error output here for the test to read back (test.trace.log). Both
+# are useful for manual UAT but never source-controlled.
+test.json
+test.trace.log

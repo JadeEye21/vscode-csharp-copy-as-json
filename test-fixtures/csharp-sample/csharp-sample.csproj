@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>CopyAsJsonSample</RootNamespace>
+    <AssemblyName>csharp-sample</AssemblyName>
+    <!--
+      Disable analyzers and source generators that the C# debug extension's
+      Roslyn host might trip over with our minimal SDK install. The fixture
+      only exists to give the debugger a concrete object graph to break on.
+    -->
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
+  </PropertyGroup>
+
+</Project>
