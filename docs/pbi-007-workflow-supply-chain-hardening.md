@@ -2,7 +2,7 @@
 
 ## Status
 
-Proposed. Derived from code review of `v0.0.1` (W1, W2, W4, R6).
+**Completed in v0.1.0–v0.1.1.** Groundwork shipped in v0.1.0 (lockfile, Dependabot for npm + GitHub Actions, `npm install --omit=optional` in workflows, batch dependency upgrades, `.vscodeignore` for leaner VSIX, Node 24 for first-party Actions, `test:unit`-only release jobs). Real-VS-Code activation-smoke gate added to `release.yml` in v0.1.1 so a build that fails to activate can no longer reach a GitHub Release.
 
 ## Goal
 

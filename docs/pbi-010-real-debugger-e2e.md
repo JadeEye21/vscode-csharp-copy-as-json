@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress.** Production code and local-only e2e harness delivered on `feature/pbi-010-real-debugger-e2e`.
+**Completed in v0.1.0.** Opt-in real-debugger E2E harness (`RUN_E2E=1`) with C# sample fixture, clipboard JSON assertions, and trace mirroring for diagnostics. Local-only by design; not gated in CI.
 
 | Phase | Items | Status |
 |---|---|---|

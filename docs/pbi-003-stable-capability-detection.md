@@ -2,7 +2,7 @@
 
 ## Status
 
-**In progress.** Production code and unit tests delivered on `feature/pbi-003-stable-capability-detection`.
+**Completed in v0.1.0.**
 
 | Phase | Items | Status |
 |---|---|---|
