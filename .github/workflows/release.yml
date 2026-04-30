@@ -33,7 +33,7 @@ jobs:
         run: npm install --no-audit --no-fund --omit=optional
 
       - name: Cache VS Code test binary
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .vscode-test
           key: vscode-test-${{ runner.os }}-${{ env.VSCODE_TEST_VERSION }}
